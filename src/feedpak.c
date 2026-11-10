@@ -19,7 +19,8 @@
 #define MAX_FILE (1u << 30)       // a file of a package larger than this is not read
 #define MAX_MANIFEST (4u << 20)
 #define MAX_ZIP_ENTRIES 65536u
-#define MAX_LIST 256u             // arrangements, stems
+#define MAX_LIST 256u             // arrangements, stems: more are left out
+#define MAX_WARN 32u
 
 typedef struct {
   char *name;
@@ -32,8 +33,21 @@ struct sb_pak {
   int fd;  // the zip; -1 for a folder
   zent *e;
   uint32_t n;
+  char *prefix;  // a zip made of the package's folder: that folder's name and a '/', before every file's name
   sb_manifest m;
+  char *warn[MAX_WARN];  // what was left out or repaired
+  uint32_t nwarn;
 };
+
+// A line for the package's list of what was left out or repaired (the first MAX_WARN are kept)
+static void warn(sb_pak *p, const char *fmt, ...) {
+  char line[240];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(line, sizeof line, fmt, ap);
+  va_end(ap);
+  if (p->nwarn < MAX_WARN && (p->warn[p->nwarn] = strdup(line))) p->nwarn++;
+}
 
 static int fail(char *err, size_t errlen, const char *fmt, ...) {
   if (errlen) {
@@ -152,9 +166,15 @@ out:
   return ok;
 }
 
+// The zip's entry for the package's file rel: by its exact name, else by one that differs only in case
 static const zent *zip_find(const sb_pak *p, const char *rel) {
-  for (uint32_t i = 0; i < p->n; i++)
-    if (!strcmp(p->e[i].name, rel)) return &p->e[i];
+  size_t pl = p->prefix ? strlen(p->prefix) : 0;
+  for (int pass = 0; pass < 2; pass++)
+    for (uint32_t i = 0; i < p->n; i++) {
+      const char *name = p->e[i].name;
+      if (pl && strncmp(name, p->prefix, pl)) continue;
+      if (!(pass ? strcasecmp(name + pl, rel) : strcmp(name + pl, rel))) return &p->e[i];
+    }
   return 0;
 }
 
@@ -262,11 +282,16 @@ static int number(yaml_document_t *d, yaml_node_t *map, const char *key, double 
   return 1;
 }
 
-// A path of the manifest: 1 when the key is absent or its path is one the format allows (then in *out)
-static int path_of(yaml_document_t *d, yaml_node_t *map, const char *key, char **out, char *err, size_t errlen) {
-  *out = text(d, map, key);
-  if (*out && !path_ok(*out)) return fail(err, errlen, "the manifest's %s is not a path inside the package: %.80s", key, *out);
-  return 1;
+// A path of the manifest: a copy, or 0 when the key is absent or its path is not one the format allows (it could
+// leave the package: that file is left out, with a line saying so)
+static char *path_of(sb_pak *p, yaml_document_t *d, yaml_node_t *map, const char *what, const char *key) {
+  char *s = text(d, map, key);
+  if (s && !path_ok(s)) {
+    warn(p, "%s: %s is not a path inside the package: %.80s", what, key, s);
+    free(s);
+    s = 0;
+  }
+  return s;
 }
 
 static const char *codec_of(const char *file) {
@@ -287,7 +312,10 @@ static void manifest_free(sb_manifest *m) {
   memset(m, 0, sizeof *m);
 }
 
-static int manifest_read(sb_manifest *m, const uint8_t *y, size_t n, char *err, size_t errlen) {
+// The manifest, taking what it has: a part that is missing or makes no sense is left out or given its default, with
+// a line in the package's list. It is no manifest only when it is not YAML, has no arrangement or has no audio.
+static int manifest_read(sb_pak *p, const uint8_t *y, size_t n, char *err, size_t errlen) {
+  sb_manifest *m = &p->m;
   yaml_parser_t ps;
   yaml_document_t d;
   if (!yaml_parser_initialize(&ps)) return fail(err, errlen, "out of memory");
@@ -304,87 +332,123 @@ static int manifest_read(sb_manifest *m, const uint8_t *y, size_t n, char *err, 
     fail(err, errlen, "manifest.yaml is not a mapping");
     goto out;
   }
+  // a song with no title is named by its file, one with no artist has an unknown one
   m->title = text(&d, root, "title"), m->artist = text(&d, root, "artist");
+  if (!m->title) {
+    const char *base = strrchr(p->path, '/');
+    base = base ? base + 1 : p->path;
+    const char *dot = strrchr(base, '.');
+    size_t len = dot && dot > base ? (size_t)(dot - base) : strlen(base);
+    if ((m->title = malloc(len + 1))) memcpy(m->title, base, len), m->title[len] = 0;
+    warn(p, "no title: named by its file");
+  }
+  if (!m->artist) {
+    m->artist = strdup("Unknown Artist");
+    warn(p, "no artist");
+  }
   if (!m->title || !m->artist) {
-    fail(err, errlen, "the manifest has no %s", m->title ? "artist" : "title");
+    fail(err, errlen, "out of memory");
     goto out;
   }
   m->album = text(&d, root, "album"), m->album_artist = text(&d, root, "album_artist");
   m->mbid = text(&d, root, "mbid"), m->isrc = text(&d, root, "isrc");
   if (number(&d, root, "year", &v) && v > 0 && v < 100000) m->year = (int)v;
   if (number(&d, root, "duration", &v) && v > 0) m->duration = v;
-  if (!path_of(&d, root, "cover", &m->cover, err, errlen) || !path_of(&d, root, "preview", &m->preview, err, errlen) ||
-      !path_of(&d, root, "lyrics", &m->lyrics, err, errlen) || !path_of(&d, root, "song_timeline", &m->timeline, err, errlen))
-    goto out;
+  m->cover = path_of(p, &d, root, "the manifest", "cover"), m->preview = path_of(p, &d, root, "the manifest", "preview");
+  m->lyrics = path_of(p, &d, root, "the manifest", "lyrics"), m->timeline = path_of(p, &d, root, "the manifest", "song_timeline");
 
   list = at(&d, root, "arrangements");
-  if (!list || list->type != YAML_SEQUENCE_NODE || list->data.sequence.items.top == list->data.sequence.items.start) {
-    fail(err, errlen, "the manifest has no arrangements");
-    goto out;
+  size_t count = list && list->type == YAML_SEQUENCE_NODE ? (size_t)(list->data.sequence.items.top - list->data.sequence.items.start) : 0;
+  if (count > MAX_LIST) {
+    warn(p, "%zu arrangements: the first %u are read", count, MAX_LIST);
+    count = MAX_LIST;
   }
-  size_t count = (size_t)(list->data.sequence.items.top - list->data.sequence.items.start);
-  if (count > MAX_LIST || !(m->arr = calloc(count, sizeof *m->arr))) {
-    fail(err, errlen, "too many arrangements");
+  if (!count || !(m->arr = calloc(count, sizeof *m->arr))) {
+    fail(err, errlen, "the manifest has no arrangements");
     goto out;
   }
   for (size_t i = 0; i < count; i++) {
     yaml_node_t *a = yaml_document_get_node(&d, list->data.sequence.items.start[i]), *tun;
+    if (!a || a->type != YAML_MAPPING_NODE) {
+      warn(p, "arrangement %zu is not a mapping: left out", i + 1);
+      continue;
+    }
     sb_pak_arr *r = &m->arr[m->narr];
-    if (!(r->id = text(&d, a, "id"))) {
-      fail(err, errlen, "arrangement %zu has no id", i + 1);
-      goto out;
+    char what[96];
+    if (!(r->id = text(&d, a, "id"))) {  // an arrangement with no id is known by its place
+      char id[32];
+      snprintf(id, sizeof id, "arrangement-%zu", i + 1);
+      r->id = strdup(id);
+      warn(p, "arrangement %zu has no id", i + 1);
+    }
+    r->name = text(&d, a, "name");
+    if (!r->name && r->id) r->name = strdup(r->id);
+    if (!r->id || !r->name) {
+      free(r->id), free(r->name);
+      memset(r, 0, sizeof *r);
+      continue;
     }
     m->narr++;
-    r->name = text(&d, a, "name");
-    if (!r->name) r->name = strdup(r->id);
+    snprintf(what, sizeof what, "arrangement %.60s", r->id);
     r->type = text(&d, a, "type");
-    if (!path_of(&d, a, "file", &r->file, err, errlen)) goto out;
+    r->file = path_of(p, &d, a, what, "file");
     r->drums = (r->type && !strcasecmp(r->type, "drums")) || at(&d, a, "drum_tab");
-    if (r->drums) free(r->file), r->file = 0;  // never a fretted chart
+    r->vocals = r->type && !strcasecmp(r->type, "vocals");
+    if (r->drums || r->vocals) free(r->file), r->file = 0;  // never a fretted chart
     r->strings = 6;
     tun = at(&d, a, "tuning");
     if (tun && tun->type == YAML_SEQUENCE_NODE) {
       size_t k = (size_t)(tun->data.sequence.items.top - tun->data.sequence.items.start);
-      if (k < 4 || k > 8) {
-        fail(err, errlen, "arrangement %s: a tuning of %zu strings", r->id, k);
-        goto out;
-      }
-      r->strings = (int)k;
-      for (size_t s = 0; s < k; s++) {
+      int good = k >= 4 && k <= 8, semis[8] = {0};
+      for (size_t s = 0; good && s < k; s++) {
         const char *t = scalar(yaml_document_get_node(&d, tun->data.sequence.items.start[s]));
         char *end = 0;
-        long semis = t ? strtol(t, &end, 10) : 0;
-        if (!t || !*t || *end || semis < -48 || semis > 48) {
-          fail(err, errlen, "arrangement %s: a tuning that is not semitones", r->id);
-          goto out;
-        }
-        r->tuning[s] = (int)semis;
+        double x = t && *t ? strtod(t, &end) : 0;  // 0.0 by hand is 0
+        good = t && *t && !*end && x >= -48 && x <= 48 && x == (int)x;
+        semis[s] = (int)x;
       }
+      if (good) {
+        r->strings = (int)k;
+        memcpy(r->tuning, semis, sizeof semis);
+      } else {
+        warn(p, "%s: a tuning that is not 4 to 8 semitone steps: read as standard", what);
+      }
+    } else if (tun) {
+      warn(p, "%s: a tuning that is no list: read as standard", what);
     }
     if (number(&d, a, "capo", &v) && v >= 0 && v <= 24) r->capo = (int)v;
-    if (number(&d, a, "centOffset", &v)) r->cents = v;
+    if (number(&d, a, "centOffset", &v) && v >= -2400 && v <= 2400) r->cents = v;
+  }
+  if (!m->narr) {
+    fail(err, errlen, "the manifest has no arrangements");
+    goto out;
   }
 
   list = at(&d, root, "stems");
-  if (!list || list->type != YAML_SEQUENCE_NODE || list->data.sequence.items.top == list->data.sequence.items.start) {
-    fail(err, errlen, "the manifest has no stems");
-    goto out;
+  count = list && list->type == YAML_SEQUENCE_NODE ? (size_t)(list->data.sequence.items.top - list->data.sequence.items.start) : 0;
+  if (count > MAX_LIST) {
+    warn(p, "%zu stems: the first %u are read", count, MAX_LIST);
+    count = MAX_LIST;
   }
-  count = (size_t)(list->data.sequence.items.top - list->data.sequence.items.start);
-  if (count > MAX_LIST || !(m->stem = calloc(count, sizeof *m->stem))) {
-    fail(err, errlen, "too many stems");
-    goto out;
-  }
+  if (count && !(m->stem = calloc(count, sizeof *m->stem))) count = 0;
   for (size_t i = 0; i < count; i++) {
     yaml_node_t *s = yaml_document_get_node(&d, list->data.sequence.items.start[i]);
     sb_pak_stem *r = &m->stem[m->nstems];
+    char what[32];
+    snprintf(what, sizeof what, "stem %zu", i + 1);
+    r->file = path_of(p, &d, s, what, "file");
     r->id = text(&d, s, "id");
-    int inside = path_of(&d, s, "file", &r->file, err, errlen);
-    if (!r->id || !inside || !r->file) {
-      if (inside) fail(err, errlen, "stem %zu has no id or file", i + 1);
+    if (r->file && !r->id) {  // a stem with no id is known by its file's name
+      const char *base = strrchr(r->file, '/');
+      base = base ? base + 1 : r->file;
+      r->id = strdup(base);
+      if (r->id && strrchr(r->id, '.')) *strrchr(r->id, '.') = 0;
+    }
+    if (!r->file || !r->id || !*r->id) {
+      if (s) warn(p, "%s has no file: left out", what);
       free(r->id), free(r->file);
       r->id = r->file = 0;
-      goto out;
+      continue;
     }
     m->nstems++;
     r->codec = text(&d, s, "codec");
@@ -394,7 +458,11 @@ static int manifest_read(sb_manifest *m, const uint8_t *y, size_t n, char *err, 
       r->codec = strdup(codec_of(r->file));
     }
     const char *on = scalar(at(&d, s, "default"));  // a boolean, or by hand "on", "yes", ...
-    r->on = on && (!strcasecmp(on, "true") || !strcasecmp(on, "on") || !strcasecmp(on, "yes"));
+    r->on = on && (!strcasecmp(on, "true") || !strcasecmp(on, "on") || !strcasecmp(on, "yes") || !strcmp(on, "1"));
+  }
+  if (!m->nstems) {
+    fail(err, errlen, "the manifest has no stems");
+    goto out;
   }
   ok = 1;
 out:
@@ -406,13 +474,16 @@ out:
 
 // --- the package -------------------------------------------------------------------------------------------------
 const sb_manifest *sb_pak_manifest(const sb_pak *p) { return &p->m; }
+const char *sb_pak_warning(const sb_pak *p, uint32_t i) { return i < p->nwarn ? p->warn[i] : 0; }
 
 void sb_pak_close(sb_pak *p) {
   if (!p) return;
   manifest_free(&p->m);
   for (uint32_t i = 0; i < p->n; i++) free(p->e[i].name);
+  for (uint32_t i = 0; i < p->nwarn; i++) free(p->warn[i]);
   free(p->e);
   if (p->fd >= 0) close(p->fd);
+  free(p->prefix);
   free(p->path);
   free(p);
 }
@@ -433,6 +504,19 @@ sb_pak *sb_pak_open(const char *path, char *err, size_t errlen) {
       goto bad;
     }
     if (!zip_open(p, (uint64_t)st.st_size, err, errlen)) goto bad;
+    // a zip of the package's folder, not of what is in it: the one manifest a folder down says which folder
+    if (!zip_find(p, "manifest.yaml")) {
+      const char *in = 0;
+      int many = 0;
+      for (uint32_t i = 0; i < p->n; i++) {
+        const char *name = p->e[i].name, *slash = strchr(name, '/');
+        if (slash && !strcasecmp(slash + 1, "manifest.yaml") && strncmp(name, "__MACOSX/", 9)) many += in != 0, in = name;
+      }
+      if (in && !many && (p->prefix = strdup(in))) {
+        strchr(p->prefix, '/')[1] = 0;
+        warn(p, "the package is in the zip's folder %s", p->prefix);
+      }
+    }
   }
   int64_t msize = sb_pak_size(p, "manifest.yaml");
   size_t n = 0;
@@ -441,7 +525,7 @@ sb_pak *sb_pak_open(const char *path, char *err, size_t errlen) {
     fail(err, errlen, msize < 0 ? "no manifest.yaml" : "manifest.yaml cannot be read");
     goto bad;
   }
-  int ok = manifest_read(&p->m, y, n, err, errlen);
+  int ok = manifest_read(p, y, n, err, errlen);
   free(y);
   if (ok) return p;
 bad:

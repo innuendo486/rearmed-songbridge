@@ -31,7 +31,8 @@ static void show(const sb_pak *p) {
          m->duration);
   for (uint32_t i = 0; i < m->narr; i++) {
     const sb_pak_arr *a = &m->arr[i];
-    printf("arrangement %s name %s type %s drums %d capo %d cents %.1f tuning", a->id, a->name, a->type ? a->type : "-", a->drums, a->capo, a->cents);
+    printf("arrangement %s name %s type %s drums %d vocals %d capo %d cents %.1f tuning", a->id, a->name, a->type ? a->type : "-", a->drums, a->vocals, a->capo,
+           a->cents);
     for (int s = 0; s < a->strings; s++) printf(" %d", a->tuning[s]);
     printf("\n");
     file(p, "chart", a->file);
@@ -41,6 +42,7 @@ static void show(const sb_pak *p) {
     file(p, "stem", m->stem[i].file);
   }
   file(p, "cover", m->cover), file(p, "preview", m->preview), file(p, "lyrics", m->lyrics), file(p, "timeline", m->timeline);
+  for (uint32_t i = 0; sb_pak_warning(p, i); i++) printf("warning %s\n", sb_pak_warning(p, i));
   printf("absent %lld %lld\n", (long long)sb_pak_size(p, "no/such/file"), (long long)sb_pak_size(p, "../manifest.yaml"));
 }
 
