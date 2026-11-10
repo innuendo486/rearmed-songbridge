@@ -2,6 +2,9 @@
 # ./build.sh            build/songbridge.dylib
 # ./build.sh --install  also copy it into RS Re-ARMed's mods folders (quit the game first)
 # ./build.sh --test     run the tests instead (arguments after it go to tests/run_tests.py)
+# ./build.sh --test-varc  the archive assembler's tests (arguments after it go to tests/run_varc_test.py)
+# ./build.sh --test-wem   the Ogg to .wem repacker's tests (arguments after it go to tests/run_wem_test.py)
+# ./build.sh --test-pak   the feedpak reader's tests (arguments after it go to tests/run_pak_test.py)
 # RS_REARMED: the rs-rearmed checkout with tools/ws7/recomp/runtime/rc_file.h
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -11,6 +14,35 @@ runtime=$rearmed/tools/ws7/recomp/runtime
 out=$here/build
 mkdir -p "$out"
 cc="clang -arch arm64 -mmacosx-version-min=11.0 -Wall -Wextra -I$here/src -I$runtime"
+# the vendored libraries (vendor/README.md), built without warnings: they are not ours to fix
+yaml="-DHAVE_CONFIG_H -DYAML_DECLARE_STATIC -I$here/vendor/libyaml"
+vendored() {  # $1: more compiler flags; the objects' paths in $vobj
+  vobj=
+  for f in api reader scanner parser loader; do
+    clang -arch arm64 -mmacosx-version-min=11.0 -O2 -w $1 $yaml -c "$here/vendor/libyaml/$f.c" -o "$out/yaml_$f.o"
+    vobj="$vobj $out/yaml_$f.o"
+  done
+}
+
+if [ "${1:-}" = --test-varc ]; then
+  shift
+  $cc -O1 -g -fsanitize=address,undefined "$here/tests/varctest.c" "$here/src/varc.c" "$here/src/psarc.c" -lz \
+    -o "$out/varctest"
+  exec python3 -I "$here/tests/run_varc_test.py" "$out/varctest" --tools "$rearmed/tools" "$@"
+fi
+
+if [ "${1:-}" = --test-pak ]; then
+  shift
+  vendored "-g -fsanitize=address,undefined"
+  $cc $yaml -O1 -g -fsanitize=address,undefined "$here/tests/paktest.c" "$here/src/feedpak.c" $vobj -lz -o "$out/paktest"
+  exec python3 -I "$here/tests/run_pak_test.py" "$out/paktest" "$@"
+fi
+
+if [ "${1:-}" = --test-wem ]; then
+  shift
+  $cc -O1 -g -fsanitize=address,undefined "$here/tests/wemtest.c" "$here/src/wem.c" -lz -o "$out/wemtest"
+  exec python3 -I "$here/tests/run_wem_test.py" "$out/wemtest" "$@"
+fi
 
 if [ "${1:-}" = --test ]; then
   shift
