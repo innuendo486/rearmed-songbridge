@@ -8,11 +8,45 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "rc_file.h"
 
+#include "wem.h"
+
 int sb_init(const char *target);  // src/songbridge.c
+
+// The game's codebook library for the mod, which without a game has none: the file SB_TEST_CODEBOOKS names
+// ("RSCB", u32 count, count u32 offsets into the data, the data), else none (then no feedpak's audio can be made)
+const sb_books *sb_test_books(void) {
+  static sb_books lib;
+  static int tried;
+  const char *path = getenv("SB_TEST_CODEBOOKS");
+  if (tried || !path) return lib.n ? &lib : 0;
+  tried = 1;
+  struct stat st;
+  int fd = open(path, O_RDONLY);
+  if (fd < 0 || fstat(fd, &st) || st.st_size < 8) return 0;
+  size_t ln = (size_t)st.st_size;
+  uint8_t *l = malloc(ln);
+  uint32_t count = 0;
+  if (!l || read(fd, l, ln) != (ssize_t)ln || memcmp(l, "RSCB", 4)) return 0;
+  close(fd);
+  memcpy(&count, l + 4, 4);
+  if (ln < 8 + 4 * (size_t)count) return 0;
+  size_t dn = ln - (8 + 4 * (size_t)count);
+  const uint8_t **book = calloc(count, sizeof *book);
+  size_t *avail = calloc(count, sizeof *avail);
+  for (uint32_t i = 0; book && avail && i < count; i++) {
+    uint32_t off;
+    memcpy(&off, l + 8 + 4 * (size_t)i, 4);
+    if (off > dn) return 0;
+    book[i] = l + 8 + 4 * (size_t)count + off, avail[i] = dn - off;
+  }
+  lib = (sb_books){count, book, avail};
+  return &lib;
+}
 extern int sb_rescan_ms;
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
