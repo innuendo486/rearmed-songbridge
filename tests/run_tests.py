@@ -28,6 +28,7 @@ BLOCK = 0x10000
 SFX = {"mac-x64": "_m.psarc", "win-x86": "_p.psarc"}
 OTHER = {"mac-x64": "win-x86", "win-x86": "mac-x64"}
 KEY = {"mac-x64": "mac", "win-x86": "pc"}
+CUSTOM_APP = b"248750"  # archives with the base game's AppID (221680), and custom songs, are served with this
 conv = None
 sbtest = None
 checks = 0
@@ -156,6 +157,8 @@ def win_to_mac(p, twin, tmp):
             nsng += 1
         elif name.endswith("aggregategraph.nt"):
             ok(v == conv.to_mac(data.decode()).replace("dx9", "macos").encode(), "aggregate graph as the converter's")
+        elif name == "appid.appid" and ("toolkit.version" in src or data.strip() == b"221680"):
+            ok(v == CUSTOM_APP, "appid.appid: served with the free DLC's AppID")
         else:
             ok(v == data, name + ": unchanged")
     note, differ = "", []
@@ -197,6 +200,8 @@ def mac_to_win(m, twin, tmp):
             back = lines(conv.to_mac(v.decode()).replace("dx9", "macos").encode())
             diff = lines(data) - back
             ok(not (back - lines(data)) and set(diff) <= {MAC_SNG_TAG}, "aggregate graph: converts back")
+        elif name == "appid.appid" and ("toolkit.version" in src or data.strip() == b"221680"):
+            ok(v == CUSTOM_APP, "appid.appid: served with the free DLC's AppID")
         else:
             ok(v == data, name + ": unchanged")
     note, differ = "", []

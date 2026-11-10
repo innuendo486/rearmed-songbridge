@@ -4,8 +4,9 @@
 // Entry 0 is the list of the other entries' names.
 //
 // The archive for the other platform, as served:
-//   header, new table of contents | name list, aggregate graph (rebuilt, in memory) | song files (stored, made when
-//   read) | the file from its first entry to its end, unchanged
+//   header, new table of contents | name list, aggregate graph, AppID (rebuilt, in memory) | song files (stored, made
+//   when read) | the file from its first entry to its end, unchanged
+// The AppID is rebuilt only for a custom song that carries another than custom songs' own (custom_appid).
 // Entries that are not rebuilt keep their blocks and point into the last part. The old name list, aggregate graph
 // and song files are still in that part; nothing points at them.
 #include "psarc.h"
@@ -287,6 +288,31 @@ static int graph_to(char **s, size_t *n, int to) {
   return paths_to(s, n, to) && replace(s, n, "macos", "dx9");
 }
 
+// The game lists a song only when its AppID is in the edition's DLC list: the free DLC (248750) is there, the base
+// game (221680) is not. An archive with the base game's AppID, or a custom song (one with a toolkit.version) with
+// anything other than the free DLC's, is served with the free DLC's.
+static const char app_custom[] = "248750";
+
+// 1 when entry i (appid.appid) is to be served as app_custom
+static int rewrite_appid(const sb_arc *a, int fd, uint32_t i) {
+  if (a->e[i].len > 32) return 0;
+  char *s = (char *)read_entry(a, fd, i), *end = 0;
+  if (!s) return 0;
+  unsigned long app = strtoul(s, &end, 10);
+  while (end && (*end == ' ' || *end == '\r' || *end == '\n' || *end == '\t')) end++;
+  int valid = app && !*end;
+  free(s);
+  if (!valid || app == strtoul(app_custom, 0, 10)) return 0;
+  if (app == 221680) return 1;
+  const char *p = 0;
+  size_t len = 0;
+  for (uint32_t k = 1; k < a->n; k++) {
+    p = name_at(a->names, a->names_len, p, len, &len);
+    if (len == 15 && !memcmp(p, "toolkit.version", 15)) return 1;
+  }
+  return 0;
+}
+
 // --- the archive for the other platform --------------------------------------------------------------------------
 typedef struct {
   uint32_t ent;
@@ -299,7 +325,7 @@ struct sb_virt {
   const sb_arc *a;
   int to;
   int64_t size;
-  uint8_t *head;  // header, table of contents, name list, aggregate graph
+  uint8_t *head;  // header, table of contents, name list, aggregate graph, AppID
   int64_t head_len, tail_voff, tail_roff, tail_len;
   vsng *sng;
   uint32_t nsng;
@@ -410,13 +436,13 @@ void sb_virt_free(sb_virt *v) {
 int64_t sb_virt_size(const sb_virt *v) { return v->size; }
 
 sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
-  enum { KEEP, NAMES, GRAPH, SNG };
+  enum { KEEP, NAMES, GRAPH, SNG, APPID };
   uint32_t n = a->n;
   sb_virt *v = calloc(1, sizeof *v);
   uint8_t *kind = calloc(n, 1), *toc = 0;
   char *names = malloc(a->names_len + 1), *graph = 0;
   size_t names_len = a->names_len, graph_len = 0;
-  blob bn = {0}, bg = {0};
+  blob bn = {0}, bg = {0}, ba = {0};
   if (!v || !kind || !names) goto fail;
   pthread_mutex_init(&v->mu, 0);
   v->a = a, v->to = to;
@@ -438,16 +464,19 @@ sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
       graph_len = (size_t)a->e[i].len;
       if (!graph_to(&graph, &graph_len, to) || !pack((const uint8_t *)graph, graph_len, &bg)) goto fail;
       kind[i] = GRAPH;
+    } else if (!ba.d && len == 11 && !memcmp(p, "appid.appid", 11) && rewrite_appid(a, fd, i)) {
+      if (!pack((const uint8_t *)app_custom, sizeof app_custom - 1, &ba)) goto fail;
+      kind[i] = APPID;
     }
   }
   v->sng = calloc(v->nsng + 1, sizeof *v->sng);
   if (!v->sng) goto fail;
 
   uint64_t nz = bn.nz;
-  for (uint32_t i = 1; i < n; i++) nz += kind[i] == GRAPH ? bg.nz : a->e[i].nb;
+  for (uint32_t i = 1; i < n; i++) nz += kind[i] == GRAPH ? bg.nz : kind[i] == APPID ? ba.nz : a->e[i].nb;
   uint64_t toc_len = 32 + (uint64_t)ENTRY * n + 2 * nz;
   if (toc_len > MAX_TOC) goto fail;
-  v->head_len = (int64_t)(toc_len + bn.n + bg.n);
+  v->head_len = (int64_t)(toc_len + bn.n + bg.n + ba.n);
   int64_t sng_len = 0;
   for (uint32_t i = 1, k = 0; i < n; i++)
     if (kind[i] == SNG) {
@@ -483,10 +512,10 @@ sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
       }
     }
     put32(t + 16, zi);
-    if (kind[i] == NAMES || kind[i] == GRAPH) {
-      const blob *b = kind[i] == NAMES ? &bn : &bg;
-      off = kind[i] == NAMES ? toc_len : toc_len + bn.n;
-      elen = kind[i] == NAMES ? names_len : graph_len;
+    if (kind[i] == NAMES || kind[i] == GRAPH || kind[i] == APPID) {
+      const blob *b = kind[i] == NAMES ? &bn : kind[i] == GRAPH ? &bg : &ba;
+      off = kind[i] == NAMES ? toc_len : kind[i] == GRAPH ? toc_len + bn.n : toc_len + bn.n + bg.n;
+      elen = kind[i] == NAMES ? names_len : kind[i] == GRAPH ? graph_len : sizeof app_custom - 1;
       memcpy(v->head + off, b->d, b->n);
       for (uint32_t k = 0; k < b->nz; k++, zi++) zt[2 * zi] = (uint8_t)(b->zl[k] >> 8), zt[2 * zi + 1] = (uint8_t)b->zl[k];
     } else if (kind[i] == SNG) {
@@ -513,10 +542,10 @@ sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
   put32(v->head + 20, n);
   put32(v->head + 24, BLOCK);
   put32(v->head + 28, a->flags | 4);
-  free(kind), free(names), free(graph), free(bn.d), free(bn.zl), free(bg.d), free(bg.zl);
+  free(kind), free(names), free(graph), free(bn.d), free(bn.zl), free(bg.d), free(bg.zl), free(ba.d), free(ba.zl);
   return v;
 fail:
-  free(kind), free(names), free(graph), free(bn.d), free(bn.zl), free(bg.d), free(bg.zl);
+  free(kind), free(names), free(graph), free(bn.d), free(bn.zl), free(bg.d), free(bg.zl), free(ba.d), free(ba.zl);
   if (v) {
     pthread_mutex_destroy(&v->mu);
     free(v->sng);
