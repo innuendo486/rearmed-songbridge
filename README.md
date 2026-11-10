@@ -12,6 +12,17 @@ the other's (one way only, or the folders contain each other):
 
     ln -s "<RS Re-ARMed>/game/dlc" "<RS Re-ARMed>/learn-play/game/dlc/mac-edition"
 
+## Install
+
+1. Download `Re-ARMed-Song-Bridge-<version>.zip` from the [Releases](https://github.com/innuendo486/rearmed-songbridge/releases)
+   page, open it and move **Re-ARMed Song Bridge.app** to Applications.
+2. Quit RS Re-ARMed, open the app and click **Install**. It puts the mod into the mods folder of each edition that is
+   installed (`~/Library/Application Support/RS Re-ARMed/mods` and `.../learn-play/mods`); the game loads it at its
+   next start. **Update** brings an older one up to date, **Remove** takes it out again; songs are never touched.
+
+The app is not notarized: the first time, open it with a right-click and **Open** (or allow it in System Settings,
+Privacy & Security). Needs RS Re-ARMed 1.14.0 or later.
+
 ## Feedpaks (experimental)
 
 A [feedpak](https://github.com/got-feedBack/feedpak-spec) in `dlc` or a folder below it (`x.feedpak`, the zip or the
@@ -45,6 +56,10 @@ Needs an RS Re-ARMed with the file provider interface (`rc_file.h`).
     ./build.sh             # build/songbridge.dylib
     ./build.sh --install   # into the mods folder of each installed edition
     ./build.sh --test      # no game needed
+    app/build-app.sh       # app/build/Re-ARMed Song Bridge.app, the installer, with the mod inside
+    app/build-app.sh --zip # and the release download; --test: the installer's tests
+
+`VERSION` is the mod's version: it is in the library, where the installer reads it.
 
 `RS_REARMED` names the rs-rearmed checkout to build against (default `~/src/rs-rearmed`). The tests need sample
 archives and the offline converter to compare with (`--samples DIR`, `--converter FILE`; `--all` for every sample).

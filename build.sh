@@ -80,7 +80,7 @@ if [ "${1:-}" = --test ]; then
 fi
 
 vendored ""
-$cc $inc -O2 -dynamiclib -Wl,-undefined,dynamic_lookup -install_name @rpath/songbridge.dylib \
+$cc $inc -DSB_VERSION="\"$(cat "$here/VERSION")\"" -O2 -dynamiclib -Wl,-undefined,dynamic_lookup -install_name @rpath/songbridge.dylib \
   -I"$rearmed/tools/ws7/recomp/overrides" "$here/src/psarc.c" "$here/src/songbridge.c" $feed $vobj $feedlibs \
   -o "$out/songbridge.dylib"
 codesign --force -s - "$out/songbridge.dylib" 2>/dev/null || true

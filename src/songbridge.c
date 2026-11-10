@@ -32,6 +32,12 @@
 #include "rc_mod.h"
 #endif
 
+// The mod's version, where the installer app finds it in the file (app/Sources/SongBridgeApp/Installer.swift)
+#ifndef SB_VERSION
+#define SB_VERSION "0"
+#endif
+__attribute__((used)) const char sb_version_tag[] = "songbridge-version:" SB_VERSION;
+
 #define SFX_LEN 8  // "_m.psarc"
 #define MAX_ROOTS 8
 #define MAX_DEPTH 8

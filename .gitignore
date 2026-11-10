@@ -2,3 +2,6 @@ build/
 *.dylib
 *.o
 .DS_Store
+app/build/
+app/.build/
+__pycache__/
