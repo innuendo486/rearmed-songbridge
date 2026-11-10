@@ -16,14 +16,15 @@ the other's (one way only, or the folders contain each other):
 
 A [feedpak](https://github.com/got-feedBack/feedpak-spec) in `dlc` or a folder below it (`x.feedpak`, the zip or the
 folder form) is listed as a song of the edition and played from the package: its charts become the game's song files,
-its audio is repacked into the game's own format without being decoded, its cover becomes the album art, and tones
-the package carries in the game's form are used as they are. Nothing of the song is written to disk; the sizes of
+its audio is repacked into the game's own format without being decoded, its cover becomes the album art, its lyrics
+the song's vocals, and tones the package carries in the game's form are used as they are. Nothing of the song is written to disk; the sizes of
 what a package turns into are kept in `~/Library/Caches/RS Re-ARMed/songbridge` (`RS_SONGBRIDGE_CACHE` names another
 folder), so that only a package's first start takes a moment. That folder can be deleted at any time.
 
 It is experimental: two packages have been played, in both editions. What it does not do yet:
 
-- **Lyrics.** A package's vocals are left out.
+- **More than one lyric track.** The package's primary lyrics are the song's; translations and transliterations are
+  left out.
 - **Audio the game cannot be given as it is.** Only Ogg Vorbis whose codebooks the game has (what libvorbis writes)
   can be repacked; a package with only Opus, MP3 or another encoder's Vorbis is not served. A package without a full
   mix plays one of its stems.

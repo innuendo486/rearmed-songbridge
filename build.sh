@@ -28,7 +28,7 @@ vendored() {  # $1: more compiler flags; the objects' paths in $vobj
 }
 # everything a feedpak's archive is made with, and the frameworks the album art needs
 feed="$here/src/feedsong.c $here/src/feedpak.c $here/src/chart.c $here/src/sng.c $here/src/songtext.c $here/src/wem.c \
-  $here/src/wemcut.c $here/src/bank.c $here/src/art.c $here/src/varc.c $here/src/sizecache.c"
+  $here/src/wemcut.c $here/src/bank.c $here/src/art.c $here/src/varc.c $here/src/sizecache.c $here/src/vocals.c"
 feedlibs="-lz -framework ImageIO -framework CoreGraphics -framework CoreFoundation"
 inc="$yaml -I$here/vendor/yyjson"
 
@@ -44,7 +44,10 @@ if [ "${1:-}" = --test-feed ]; then
   vendored "-g -fsanitize=address,undefined"
   $cc $inc -O1 -g -fsanitize=address,undefined "$here/tests/feedsongtest.c" $feed "$here/src/psarc.c" $vobj $feedlibs \
     -o "$out/feedsongtest"
-  exec python3 -I "$here/tests/run_feedsong_test.py" "$out/feedsongtest" --tools "$rearmed/tools" "$@"
+  $cc $inc -O1 -g -fsanitize=address,undefined "$here/tests/vocalstest.c" "$here/src/vocals.c" "$here/src/sng.c" \
+    "$here/src/chart.c" "$out/yyjson.o" -lz -o "$out/vocalstest"
+  exec python3 -I "$here/tests/run_feedsong_test.py" "$out/feedsongtest" --tools "$rearmed/tools" \
+    --vocalstest "$out/vocalstest" "$@"
 fi
 
 if [ "${1:-}" = --test-cache ]; then

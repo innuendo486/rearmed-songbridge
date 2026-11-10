@@ -10,8 +10,8 @@
 // ext.source.definition in rigs.json), put in the manifest as they are; else songtext.c's default tone.
 //
 // Three depths of work, each done when an entry first needs it: the package opened (album art, preview, audio), the
-// charts read and the song files made (every text and song file), an entry's own bytes. A song's vocals are left
-// out for now: the game shows no lyrics for it.
+// charts read and the song files made (every text and song file), an entry's own bytes. The package's lyrics are the
+// song's vocals arrangement (vocals.c).
 #include "feedsong.h"
 
 #include <pthread.h>
@@ -31,11 +31,13 @@
 #include "sng.h"
 #include "songtext.h"
 #include "varc.h"
+#include "vocals.h"
 #include "wemcut.h"
 
-#define VERSION 1u  // of what makes the entries: a change that can change a size raises it
+#define VERSION 2u  // of what makes the entries: a change that can change a size raises it
 #define BLOCK 0x10000u
 #define MAX_TONES 4
+#define LYRICS 0xffffffu  // an arrangement's place in the manifest when it is the lyrics, which have none
 
 typedef struct {
   char *name;
@@ -251,7 +253,7 @@ static int chart_all(sb_feedsong *s, char *err, size_t errlen) {
   char *timeline = m->timeline ? (char *)sb_pak_read(s->pak, m->timeline, &tn) : 0;
   char *rigs_text = (char *)sb_pak_read(s->pak, "rigs.json", &rn);
   yyjson_doc *rigs = rigs_text ? yyjson_read(rigs_text, rn, YYJSON_READ_ALLOW_COMMENTS | YYJSON_READ_ALLOW_TRAILING_COMMAS) : 0;
-  s->a = calloc(m->narr, sizeof *s->a), s->ai = calloc(m->narr, sizeof *s->ai);
+  s->a = calloc((size_t)m->narr + 1, sizeof *s->a), s->ai = calloc((size_t)m->narr + 1, sizeof *s->ai);
   for (uint32_t i = 0; s->a && s->ai && i < m->narr && s->narr < SB_MAX_ARR; i++) {
     const sb_pak_arr *pa = &m->arr[i];
     if (pa->drums || !pa->file) {
@@ -291,6 +293,21 @@ static int chart_all(sb_feedsong *s, char *err, size_t errlen) {
   }
   yyjson_doc_free(rigs);
   free(rigs_text), free(timeline);
+  // the lyrics: an arrangement of their own, after the ones that are played (a song of lyrics alone is none)
+  if (s->narr && s->narr < SB_MAX_ARR && m->lyrics && s->a && s->ai) {
+    size_t n = 0;
+    char *json = (char *)sb_pak_read(s->pak, m->lyrics, &n), why[160] = "";
+    arr *a = &s->a[s->narr];
+    if (!json) snprintf(why, sizeof why, "%s is not in the package", m->lyrics);
+    else a->sng = sb_vocals_sng(json, n, s->platform, &a->sng_n, 0, why, sizeof why);
+    free(json);
+    if (a->sng) {
+      a->mi = LYRICS;
+      s->ai[s->narr++] = (sb_arr_info){.type = SB_ARR_VOCALS, .name = "vocals"};
+    } else {
+      note(s, "no lyrics: %s", why);
+    }
+  }
   if (!s->narr) return fail(err, errlen, "no arrangement that can be played%s%s", s->note[0] ? ": " : "", s->note);
   s->info = (sb_song_info){.title = m->title, .artist = m->artist, .album = m->album, .year = m->year, .length = m->duration,
                            .arr = s->ai, .narr = s->narr};
