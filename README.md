@@ -69,5 +69,3 @@ writer, the manifests, the sound banks and the album art. Some need the game's c
 gives at run time and rearmed-mods' stems helper keeps a copy of; without it they say so and skip.
 
 `vendor/` has libyaml and yyjson (MIT; `vendor/README.md`).
-
-MIT

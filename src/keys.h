@@ -1,4 +1,3 @@
-// The archives' AES keys. PRIVATE: this file is the reason the repository is. Made by tools/genkeys.py.
 #ifndef SB_KEYS_H
 #define SB_KEYS_H
 #include <stdint.h>
