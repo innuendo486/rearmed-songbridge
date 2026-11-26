@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Checks the mod on real archives, without a game.
 
-usage: build.sh --test [--all] [--samples DIR] [--converter psarc_to_mac.py] [--plain X_p.psarc]
+usage: build.sh --test [--all] [--samples DIR] [--converter psarc_to_mac.py] [--plain X_p.psarc] [--native X_rsxr_p.psarc]
 
 SBTEST (tests/sbtest.c) starts the mod for one edition and reads through rc_file.c, as the game does. For each
 sample this compares the archive the mod serves with what the offline converter makes of the same file (every
 entry's content; a song file's after decrypting it with the edition's key), and, where the samples hold the same
 song for both platforms, with the other platform's real archive. Then the listing rules: one archive a song, and
 files that are not whole archives left alone.
+
+A native package of RS Extended Range (--native: an x_rsxr_p.psarc, a plain archive with the magic PSXR, N-string
+charts whose inflated body starts SNXR and manifests with ExtendedRange) is served in both directions with its magic
+kept and its charts' bodies as they are; its Mac form is made here from it.
 
 Nothing is written next to the samples: the folders the mod sees are temporary, with links to them.
 """
@@ -56,12 +60,33 @@ def looks_zlib(b):
     return len(b) >= 2 and b[0] & 15 == 8 and b[0] >> 4 <= 7 and (b[0] << 8 | b[1]) % 31 == 0
 
 
-def strict(path):
+def magic_of(path):
+    with open(path, "rb") as f:
+        return f.read(4)
+
+
+def read(path):
+    """conv.read_psarc's content of the archive; a native package (PSXR) is read as the same archive with PSAR"""
+    if magic_of(path) != b"PSXR":
+        return conv.read_psarc(path)[1]
+    d = bytearray(open(path, "rb").read())
+    d[:4] = b"PSAR"
+    fd, tmp = tempfile.mkstemp(suffix=".psarc")
+    try:
+        os.write(fd, d)
+        os.close(fd)
+        return conv.read_psarc(tmp)[1]
+    finally:
+        os.unlink(tmp)
+
+
+def strict(path, want_magic=b"PSAR"):
     """The archive read as a strict reader does: every entry inside the file, a block compressed exactly when it is
     shorter than 64 KiB and starts with a zlib header. names -> content, in the table's order."""
     d = open(path, "rb").read()
     magic, ver, comp, toc_len, esize, n, bsize, flags = struct.unpack(">4sI4sIIIII", d[:32])
-    ok(magic == b"PSAR" and ver == 0x10004 and comp == b"zlib" and esize == 30 and bsize == BLOCK, "header")
+    ok(magic == want_magic, "magic %s, as the source's" % want_magic.decode())
+    ok(ver == 0x10004 and comp == b"zlib" and esize == 30 and bsize == BLOCK, "header")
     ok(flags & 4, "table of contents encrypted")
     toc = conv.aes("cfb", conv.TOC_KEY, conv.TOC_IV, d[32:toc_len], True)
     ok((len(toc) - 30 * n) % 2 == 0, "table of contents length")
@@ -129,8 +154,8 @@ def served(target, src, tmp):
     ok(listing(target, dlc) == [vname], "%s listed as %s alone" % (base, vname))
     out = os.path.join(d, "out.psarc")
     sb(target, "dump", os.path.join(dlc, vname), out)
-    content = strict(out)
-    lenient = conv.read_psarc(out)[1]
+    content = strict(out, magic_of(src))
+    lenient = read(out)
     ok(list(lenient.items()) == list(content.items()), "the converter's reader reads the same")
     size = os.path.getsize(out)
     shutil.rmtree(d)
@@ -144,9 +169,43 @@ def check_sng(name, data, want_payload):
     ok(sng_plain(name, data) == want_payload, name + ": decrypts to the same song")
 
 
+def body(name, sng):
+    """A song file's inflated body"""
+    payload = sng_plain(name, sng)
+    raw = zlib.decompress(payload[4:])
+    ok(len(raw) == struct.unpack("<I", payload[:4])[0], name + ": its size")
+    return raw
+
+
+def native_checks(src, got, name_to):
+    """For a native package (any SNXR chart): what the native format's reader needs is there as the source has it"""
+    if not any(is_sng(k) and body(k, v).startswith(b"SNXR") for k, v in src.items()):
+        return
+    for name, data in src.items():
+        v = got[name_to(name)]
+        if is_sng(name):
+            want = body(name, data)
+            ok(body(name_to(name), v) == want, name + ": the inflated body as the source's" + (" (SNXR)" if want[:4] == b"SNXR" else ""))
+        elif name.startswith("manifests/") and b'"ExtendedRange"' in data:
+            ok(v == data and b'"Tuning"' in v, name + ": ExtendedRange and Tuning as the source has them")
+
+
+def mac_form(p, out):
+    """The Mac form of the native package p, as DotCharter's Windows one would be converted and kept plain: names and
+    aggregate graph the Mac's, song files plain as they are, the magic PSXR"""
+    mac = {}
+    for name, data in read(p).items():
+        if name.endswith("aggregategraph.nt"):
+            data = conv.to_mac(data.decode()).replace("dx9", "macos").encode()
+        mac[conv.to_mac(name)] = data
+    conv.write_psarc(out, mac, False)
+    with open(out, "r+b") as f:
+        f.write(b"PSXR")
+
+
 def win_to_mac(p, twin, tmp):
     got, size = served("mac-x64", p, tmp)
-    src = conv.read_psarc(p)[1]
+    src = read(p)
     ok(list(got) == [conv.to_mac(k) for k in src], "names")
     nsng = 0
     for name, data in src.items():
@@ -163,7 +222,7 @@ def win_to_mac(p, twin, tmp):
             ok(v == data, name + ": unchanged")
     note, differ = "", []
     if twin:
-        real = conv.read_psarc(twin)[1]
+        real = read(twin)
         ok(list(real) == list(got), "names as the real Mac archive's")
         for name, data in real.items():
             if is_sng(name):
@@ -177,12 +236,13 @@ def win_to_mac(p, twin, tmp):
                 ok(not name.startswith(("manifests/", "gamexblocks/", "songs/")), name + ": the real Mac archive's")
                 differ.append(name)
         note = ", matches " + os.path.basename(twin) + (" but its own " + ", ".join(differ) if differ else "")
+    native_checks(src, got, conv.to_mac)
     print("  mac-x64  %-34s %9d bytes, %2d entries, %d song files%s" % (os.path.basename(p), size, len(got), nsng, note))
 
 
 def mac_to_win(m, twin, tmp):
     got, size = served("win-x86", m, tmp)
-    src = conv.read_psarc(m)[1]
+    src = read(m)
     ok(list(got) == [to_win(k) for k in src], "names")
     nsng = 0
     for name, data in src.items():
@@ -206,7 +266,7 @@ def mac_to_win(m, twin, tmp):
             ok(v == data, name + ": unchanged")
     note, differ = "", []
     if twin:
-        real = conv.read_psarc(twin)[1]
+        real = read(twin)
         ok(list(real) == list(got), "names as the real Windows archive's")
         for name, data in real.items():
             if is_sng(name):
@@ -219,17 +279,18 @@ def mac_to_win(m, twin, tmp):
                 ok(not name.startswith(("manifests/", "gamexblocks/", "songs/")), name + ": the real Windows archive's")
                 differ.append(name)
         note = ", matches " + os.path.basename(twin) + (" but its own " + ", ".join(differ) if differ else "")
+    native_checks(src, got, to_win)
     print("  win-x86  %-34s %9d bytes, %2d entries, %d song files%s" % (os.path.basename(m), size, len(got), nsng, note))
 
 
-def rules(target, foreign, native, tmp):
+def rules(target, foreign, native, tmp, tag=""):
     """The listing: foreign is an archive of the other platform, native the same song for target's"""
     fs, ns = SFX[OTHER[target]], SFX[target]
     n = [0]
 
     def folder(*files):
         n[0] += 1
-        dlc = os.path.join(tmp, "rules-%s-%d" % (target, n[0]), "dlc")
+        dlc = os.path.join(tmp, "rules%s-%s-%d" % (tag, target, n[0]), "dlc")
         os.makedirs(dlc)
         for rel, src in files:
             os.makedirs(os.path.dirname(os.path.join(dlc, rel)), exist_ok=True)
@@ -278,14 +339,14 @@ def rules(target, foreign, native, tmp):
         ok(sb(target, "stat", dlc + "/" + k + fs).split()[:2] == ["real", str(len(v))], k + ": the file as it is")
     ok(stat(dlc + "/a" + ns) == "served", "the archive next to them is served")
     # outside a dlc folder: nothing
-    d = os.path.join(tmp, "elsewhere-" + target)
+    d = os.path.join(tmp, "elsewhere%s-" % tag + target)
     os.mkdir(d)
     os.symlink(foreign, d + "/a" + fs)
     ok(listing(target, d) == ["a" + fs] and stat(d + "/a" + ns) == "none", "outside dlc: untouched")
     # an edition's own archives alone: nothing changes
     dlc = folder(("a" + ns, native), ("sub/b" + ns, native))
     ok(listing(target, dlc) == ["a" + ns, "sub"] and stat(dlc + "/a" + ns) == "real", "own archives alone: untouched")
-    print("  %s  listing rules, files that are not archives" % target)
+    print("  %s  listing rules, files that are not archives%s" % (target, tag and " (%s)" % tag))
 
 
 def main():
@@ -296,6 +357,8 @@ def main():
     ap.add_argument("--samples", default="/Volumes/Storage/Rocksmith/songs/dlc-current")
     ap.add_argument("--converter", default="/Volumes/Storage/Rocksmith/tools/psarc-to-mac/psarc_to_mac.py")
     ap.add_argument("--plain", default="/Volumes/Storage/Rocksmith/build/seven-mac-work/seven/plain/Ave-Mujica_A-Song-Of-Romance-plain_p.psarc")
+    ap.add_argument("--native", default="/Volumes/Storage/Rocksmith/build/seven-native/avemujica_rsxr_p.psarc",
+                    help="an RS Extended Range native package (PSXR)")
     a = ap.parse_args()
     sbtest = os.path.abspath(a.sbtest)
     spec = importlib.util.spec_from_file_location("conv", a.converter)
@@ -339,6 +402,17 @@ def main():
         print("Rules:")
         rules("mac-x64", small[0], small[1], tmp)
         rules("win-x86", small[1], small[0], tmp)
+        if a.native and os.path.exists(a.native):
+            ok(magic_of(a.native) == b"PSXR" and a.native.endswith("_rsxr_p.psarc"), "--native: an x_rsxr_p.psarc with the magic PSXR")
+            print("RS Extended Range native package, both forms:")
+            nm = os.path.join(tmp, os.path.basename(a.native)[:-len("_p.psarc")] + "_m.psarc")
+            mac_form(a.native, nm)
+            win_to_mac(a.native, None, tmp)
+            mac_to_win(nm, a.native, tmp)
+            rules("mac-x64", a.native, nm, tmp, "native")
+            rules("win-x86", nm, a.native, tmp, "native")
+        else:
+            print("(no native package to try: %s)" % a.native)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("passed: %d checks" % checks)

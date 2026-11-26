@@ -167,7 +167,8 @@ int main(int argc, char **argv) {
     CHECK(!rc_file_stat(path, &st2) && st2.st_size == st.st_size && st2.st_mtimespec.tv_sec == st.st_mtimespec.tv_sec);
     uint8_t h[4] = {0};
     rc_file_pread(fd, h, 4, 0);
-    printf("%s %lld %s\n", v ? "served" : "real", (long long)st.st_size, memcmp(h, "PSAR", 4) ? "other" : "PSAR");
+    int known = !memcmp(h, "PSAR", 4) || !memcmp(h, "PSXR", 4);
+    printf("%s %lld %.4s\n", v ? "served" : "real", (long long)st.st_size, known ? (const char *)h : "other");
     CHECK(!rc_file_close(fd));
     return 0;
   }

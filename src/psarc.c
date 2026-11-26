@@ -1,7 +1,9 @@
 // See psarc.h. The archive: a 32-byte header, the table of contents (30-byte entries, then the block sizes, both
 // AES-256-CFB encrypted when the flags have 4), then the entries' blocks. An entry is cut in 64 KiB blocks, each
 // zlib-compressed or stored as it is when that is not smaller (block size 0 in the table: a full stored block).
-// Entry 0 is the list of the other entries' names.
+// Entry 0 is the list of the other entries' names. The magic is "PSAR", or "PSXR" for an RS Extended Range native
+// package (its docs/release/NATIVE-FORMAT.md: a plain archive with N-string charts), which keeps its magic as served:
+// a game reads it only with the native format's support, which takes PSXR (rearmed-mods' Seven-String Guitar).
 //
 // The archive for the other platform, as served:
 //   header, new table of contents | name list, aggregate graph, AppID (rebuilt, in memory) | song files (stored, made
@@ -37,6 +39,7 @@ typedef struct {
 
 struct sb_arc {
   uint32_t n, nz, flags, toc_len;
+  char magic[4];  // PSAR, or PSXR
   int64_t size;
   ent *e;
   uint16_t *zl;
@@ -141,7 +144,7 @@ static uint32_t count_lines(const char *s, size_t n) {
 sb_arc *sb_parse(int fd, int64_t size) {
   uint8_t h[32], *toc = 0;
   if (size < 32 || !pread_all(fd, h, 32, 0)) return 0;
-  if (memcmp(h, "PSAR", 4) || memcmp(h + 8, "zlib", 4)) return 0;
+  if ((memcmp(h, "PSAR", 4) && memcmp(h, "PSXR", 4)) || memcmp(h + 8, "zlib", 4)) return 0;
   uint32_t toc_len = be32(h + 12), esize = be32(h + 16), n = be32(h + 20), bsize = be32(h + 24), flags = be32(h + 28);
   if (esize != ENTRY || bsize != BLOCK || n < 1 || n > (1u << 20)) return 0;
   if (toc_len > MAX_TOC || (uint64_t)toc_len < 32 + (uint64_t)ENTRY * n || (int64_t)toc_len > size) return 0;
@@ -151,6 +154,7 @@ sb_arc *sb_parse(int fd, int64_t size) {
   if (!a || !toc || !pread_all(fd, toc, tn, 32)) goto fail;
   if (flags & 4) cfb(sb_toc_key, sb_toc_iv, toc, tn, 1);
   a->n = n, a->flags = flags, a->toc_len = toc_len, a->size = size;
+  memcpy(a->magic, h, 4);
   a->nz = (uint32_t)((tn - (size_t)ENTRY * n) / 2);
   a->e = calloc(n, sizeof *a->e);
   a->zl = calloc(a->nz + 1, sizeof *a->zl);
@@ -534,7 +538,7 @@ sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
     put40(t + 25, off);
   }
   cfb(sb_toc_key, sb_toc_iv, toc, (size_t)toc_len - 32, 0);
-  memcpy(v->head, "PSAR", 4);
+  memcpy(v->head, a->magic, 4);
   put32(v->head + 4, 0x10004);
   memcpy(v->head + 8, "zlib", 4);
   put32(v->head + 12, (uint32_t)toc_len);
