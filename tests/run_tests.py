@@ -357,8 +357,8 @@ def main():
     ap.add_argument("--samples", default="/Volumes/Storage/Rocksmith/songs/dlc-current")
     ap.add_argument("--converter", default="/Volumes/Storage/Rocksmith/tools/psarc-to-mac/psarc_to_mac.py")
     ap.add_argument("--plain", default="/Volumes/Storage/Rocksmith/build/seven-mac-work/seven/plain/Ave-Mujica_A-Song-Of-Romance-plain_p.psarc")
-    ap.add_argument("--native", default="/Volumes/Storage/Rocksmith/build/seven-native/avemujica_rsxr_p.psarc",
-                    help="an RS Extended Range native package (PSXR)")
+    ap.add_argument("--native", help="an RS Extended Range native package (PSXR)",
+                    default="/Volumes/Storage/Rocksmith/build/seven-native/Nickelback_Burn-It-To-The-Ground_Dell_v2_3_rsxr_p.psarc")
     a = ap.parse_args()
     sbtest = os.path.abspath(a.sbtest)
     spec = importlib.util.spec_from_file_location("conv", a.converter)

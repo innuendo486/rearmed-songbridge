@@ -68,7 +68,8 @@ Needs an RS Re-ARMed with the file provider interface (`rc_file.h`).
 
 `RS_REARMED` names the rs-rearmed checkout to build against (default `~/src/rs-rearmed`). The tests need sample
 archives and the offline converter to compare with (`--samples DIR`, `--converter FILE`, `--native FILE` for an RS
-Extended Range native package, made with its `tools/native_chart.py to-native`; `--all` for every sample).
+Extended Range native package, as DotCharter exports one or its `tools/native_chart.py to-native` makes; `--all` for
+every sample).
 The parts a feedpak's archive is made of have tests of their own: `--test-pak`, `--test-varc`, `--test-wem`,
 `--test-cache`, `--test-feed` (`--pak FILE` for each package to try), and `tests/build_*_test.sh` for the song file
 writer, the manifests, the sound banks and the album art. Some need the game's codebook library, which the game
