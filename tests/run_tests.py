@@ -13,6 +13,8 @@ A native package of RS Extended Range (--native: an x_rsxr_p.psarc, a plain arch
 charts whose inflated body starts SNXR and manifests with ExtendedRange) is served in both directions with its magic
 kept and its charts' bodies as they are; its Mac form is made here from it.
 
+Without samples (--samples names no folder with pairs) the parts that need them are skipped, and said so.
+
 Nothing is written next to the samples: the folders the mod sees are temporary, with links to them.
 """
 import argparse
@@ -354,13 +356,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sbtest")
     ap.add_argument("--all", action="store_true", help="every pair of the samples, not a selection")
-    ap.add_argument("--samples", default="/Volumes/Storage/Rocksmith/songs/dlc-current")
+    ap.add_argument("--samples", default="/Volumes/Storage/Rocksmith/songs/backup-dlc",
+                    help="a folder with x_p.psarc and x_m.psarc of the same songs")
     ap.add_argument("--converter", default="/Volumes/Storage/Rocksmith/tools/psarc-to-mac/psarc_to_mac.py")
     ap.add_argument("--plain", default="/Volumes/Storage/Rocksmith/build/seven-mac-work/seven/plain/Ave-Mujica_A-Song-Of-Romance-plain_p.psarc")
     ap.add_argument("--native", help="an RS Extended Range native package (PSXR)",
                     default="/Volumes/Storage/Rocksmith/build/seven-native/Nickelback_Burn-It-To-The-Ground_Dell_v2_3_rsxr_p.psarc")
     a = ap.parse_args()
     sbtest = os.path.abspath(a.sbtest)
+    if not os.path.exists(a.converter):
+        sys.exit("no offline converter to compare with: %s (--converter FILE)" % a.converter)
     spec = importlib.util.spec_from_file_location("conv", a.converter)
     conv = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(conv)
@@ -371,13 +376,15 @@ def main():
             if f.endswith("_p.psarc") and os.path.exists(os.path.join(root, f[:-8] + "_m.psarc")):
                 pairs.append((os.path.join(root, f), os.path.join(root, f[:-8] + "_m.psarc")))
     pairs.sort()
-    if not pairs:
-        sys.exit("no pairs of x_p.psarc and x_m.psarc under " + a.samples)
-    small = min(pairs, key=lambda pm: os.path.getsize(pm[0]))
-    if not a.all:
-        big = [pm for pm in pairs if os.path.getsize(pm[0]) > 20 << 20][:1]  # a pack of many songs, if there is one
-        step = max(1, len(pairs) // 6)
-        pairs = sorted(set(pairs[::step][:6] + big + [small]))
+    if pairs:
+        small = min(pairs, key=lambda pm: os.path.getsize(pm[0]))
+        if not a.all:
+            big = [pm for pm in pairs if os.path.getsize(pm[0]) > 20 << 20][:1]  # a pack of many songs, if there is one
+            step = max(1, len(pairs) // 6)
+            pairs = sorted(set(pairs[::step][:6] + big + [small]))
+    else:
+        print("(no pairs of x_p.psarc and x_m.psarc under %s (--samples DIR): the samples and the listing rules on them\n"
+              " are skipped)" % a.samples)
     mac_only = []
     for root, _, files in os.walk(a.samples):
         for f in sorted(files):
@@ -387,21 +394,22 @@ def main():
 
     tmp = tempfile.mkdtemp(prefix="songbridge-test-")
     try:
-        print("Windows archives in the Mac edition (%d):" % len(pairs))
-        for p, m in pairs:
-            win_to_mac(p, m, tmp)
-        if a.plain and os.path.exists(a.plain):
-            win_to_mac(a.plain, None, tmp)
-        else:
-            print("  (no plain archive to try: %s)" % a.plain)
-        print("Mac archives in Learn & Play (%d with the Windows archive to compare, %d without):" % (len(pairs), len(mac_only)))
-        for p, m in pairs:
-            mac_to_win(m, p, tmp)
-        for m in mac_only:
-            mac_to_win(m, None, tmp)
-        print("Rules:")
-        rules("mac-x64", small[0], small[1], tmp)
-        rules("win-x86", small[1], small[0], tmp)
+        if pairs:
+            print("Windows archives in the Mac edition (%d):" % len(pairs))
+            for p, m in pairs:
+                win_to_mac(p, m, tmp)
+            if a.plain and os.path.exists(a.plain):
+                win_to_mac(a.plain, None, tmp)
+            else:
+                print("  (no plain archive to try: %s)" % a.plain)
+            print("Mac archives in Learn & Play (%d with the Windows archive to compare, %d without):" % (len(pairs), len(mac_only)))
+            for p, m in pairs:
+                mac_to_win(m, p, tmp)
+            for m in mac_only:
+                mac_to_win(m, None, tmp)
+            print("Rules:")
+            rules("mac-x64", small[0], small[1], tmp)
+            rules("win-x86", small[1], small[0], tmp)
         if a.native and os.path.exists(a.native):
             ok(magic_of(a.native) == b"PSXR" and a.native.endswith("_rsxr_p.psarc"), "--native: an x_rsxr_p.psarc with the magic PSXR")
             print("RS Extended Range native package, both forms:")

@@ -66,10 +66,11 @@ Needs an RS Re-ARMed with the file provider interface (`rc_file.h`).
 
 `VERSION` is the mod's version: it is in the library, where the installer reads it.
 
-`RS_REARMED` names the rs-rearmed checkout to build against (default `~/src/rs-rearmed`). The tests need sample
-archives and the offline converter to compare with (`--samples DIR`, `--converter FILE`, `--native FILE` for an RS
-Extended Range native package, as DotCharter exports one or its `tools/native_chart.py to-native` makes; `--all` for
-every sample).
+`RS_REARMED` names the rs-rearmed checkout to build against (default `~/src/rs-rearmed`). The tests compare with the
+offline converter (`--converter FILE`) and with sample archives: `--samples DIR`, a folder with songs as both
+`x_p.psarc` and `x_m.psarc` (default `/Volumes/Storage/Rocksmith/songs/backup-dlc`; without such a folder the parts
+that need samples are skipped, and the test says so), `--all` for every sample. `--native FILE`: an RS Extended Range
+native package, as DotCharter exports one or its `tools/native_chart.py to-native` makes.
 The parts a feedpak's archive is made of have tests of their own: `--test-pak`, `--test-varc`, `--test-wem`,
 `--test-cache`, `--test-feed` (`--pak FILE` for each package to try), and `tests/build_*_test.sh` for the song file
 writer, the manifests, the sound banks and the album art. Some need the game's codebook library, which the game
