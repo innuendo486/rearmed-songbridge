@@ -3,7 +3,8 @@
 // (psarc.c); its own name is left out of the listing. A song (by its key: the archive's xblock names) is shown
 // once: an archive of this edition's own wins over one of the other's, and of two of the other's the first by path.
 // A file that is not a whole archive is left as it is. An RS Extended Range native package (x_rsxr_p.psarc, magic
-// PSXR) is an archive like any other here, served with its magic (psarc.c).
+// PSXR) is an archive like any other here (x_rsxr_p.psarc listed as x_rsxr_m.psarc and the reverse), served as it is
+// but for its platform's parts: its magic, plain table of contents and plain song files kept (psarc.c).
 //
 // A feedpak (x.feedpak, a zip file or a folder: feedsong.h) there is listed as x with this edition's suffix and served
 // as the song archive made of it, under the same rules: its song is shown once, and an archive wins over a package.

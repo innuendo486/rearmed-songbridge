@@ -2,8 +2,14 @@
 // AES-256-CFB encrypted when the flags have 4), then the entries' blocks. An entry is cut in 64 KiB blocks, each
 // zlib-compressed or stored as it is when that is not smaller (block size 0 in the table: a full stored block).
 // Entry 0 is the list of the other entries' names. The magic is "PSAR", or "PSXR" for an RS Extended Range native
-// package (its docs/release/NATIVE-FORMAT.md: a plain archive with N-string charts), which keeps its magic as served:
-// a game reads it only with the native format's support, which takes PSXR (rearmed-mods' Seven-String Guitar).
+// package (its docs/release/NATIVE-FORMAT.md: a plain archive with N-string charts).
+//
+// A native package is served as it is but for its platform's parts: its magic, its table of contents plain as it
+// is (or encrypted, when it is), its plain song files (flags 1, SNXR charts and stock ones) with their own blocks,
+// untouched; only an encrypted song file there is given the other key. A game reads it only with the native
+// format's support, which takes PSXR and plain archives (rearmed-mods' Seven-String Guitar with Plain Packages). Any
+// other archive is served as a stock one: the table of contents encrypted, every song file encrypted with the
+// edition's key (a plain one too, so that a plain archive needs nothing of the game).
 //
 // The archive for the other platform, as served:
 //   header, new table of contents | name list, aggregate graph, AppID (rebuilt, in memory) | song files (stored, made
@@ -103,6 +109,19 @@ void sb_arc_free(sb_arc *a) {
   free(a);
 }
 
+// A block (zs bytes at off, in z: BLOCK bytes) into out (want bytes); 0 when it is neither a zlib stream of the
+// block nor the block itself
+static int read_block(int fd, uint8_t *z, uint32_t zs, uint64_t off, uint8_t *out, uint64_t want) {
+  if (!pread_all(fd, z, zs, (int64_t)off)) return 0;
+  if (zs < BLOCK) {
+    uLongf got = (uLongf)want;
+    if (uncompress(out, &got, z, zs) == Z_OK && got == want) return 1;
+  }
+  if (zs != want) return 0;
+  memcpy(out, z, zs);
+  return 1;
+}
+
 // Entry i's content (len bytes and a 0), or 0
 static uint8_t *read_entry(const sb_arc *a, int fd, uint32_t i) {
   const ent *e = &a->e[i];
@@ -112,16 +131,7 @@ static uint8_t *read_entry(const sb_arc *a, int fd, uint32_t i) {
   for (uint32_t b = 0; out && z && b < e->nb; b++) {
     uint32_t zs = a->zl[e->zi + b] ? a->zl[e->zi + b] : BLOCK;
     uint64_t want = e->len - done < BLOCK ? e->len - done : BLOCK;
-    if (!pread_all(fd, z, zs, (int64_t)off)) goto fail;
-    int ok = 0;
-    if (zs < BLOCK) {
-      uLongf got = (uLongf)want;
-      ok = uncompress(out + done, &got, z, zs) == Z_OK && got == want;
-    }
-    if (!ok) {
-      if (zs != want) goto fail;  // neither a zlib stream of the block nor the block itself
-      memcpy(out + done, z, zs);
-    }
+    if (!read_block(fd, z, zs, off, out + done, want)) goto fail;
     off += zs, done += want;
   }
   if (!out || !z) goto fail;
@@ -132,6 +142,21 @@ fail:
   free(out);
   free(z);
   return 0;
+}
+
+// The flags of the song file in entry i (1 plain, 3 encrypted), from its first block; -1 when it is not one or
+// cannot be read
+static int sng_flags(const sb_arc *a, int fd, uint32_t i) {
+  const ent *e = &a->e[i];
+  if (!e->nb || e->len < SNG_HEAD) return -1;
+  uint32_t zs = a->zl[e->zi] ? a->zl[e->zi] : BLOCK;
+  uint64_t want = e->len < BLOCK ? e->len : BLOCK;
+  uint8_t *z = malloc(BLOCK), *out = malloc(BLOCK);
+  int flags = -1;
+  if (z && out && read_block(fd, z, zs, e->off, out, want) && le32(out) == SNG_MAGIC) flags = (int)le32(out + 4);
+  free(z);
+  free(out);
+  return flags;
 }
 
 static uint32_t count_lines(const char *s, size_t n) {
@@ -455,14 +480,17 @@ sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
 
   // what each entry becomes
   kind[0] = NAMES;
+  const int native = !memcmp(a->magic, "PSXR", 4);
   const char *p = 0;
   size_t len = 0;
   for (uint32_t i = 1; i < n; i++) {
     p = name_at(a->names, a->names_len, p, len, &len);
     int src = contains(p, len, "songs/bin/generic/") ? SB_PC : contains(p, len, "songs/bin/macos/") ? SB_MAC : -1;
     if (src >= 0 && src != to && a->e[i].len <= MAX_REBUILT) {
-      kind[i] = SNG;
-      v->nsng++;
+      if (!native || sng_flags(a, fd, i) == 3) {  // a native package's plain song files are kept as they are
+        kind[i] = SNG;
+        v->nsng++;
+      }
     } else if (!graph && ends_with(p, len, "aggregategraph.nt")) {
       if (!(graph = (char *)read_entry(a, fd, i))) goto fail;
       graph_len = (size_t)a->e[i].len;
@@ -537,7 +565,8 @@ sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
     put40(t + 20, elen);
     put40(t + 25, off);
   }
-  cfb(sb_toc_key, sb_toc_iv, toc, (size_t)toc_len - 32, 0);
+  const uint32_t flags = native ? a->flags : a->flags | 4;
+  if (flags & 4) cfb(sb_toc_key, sb_toc_iv, toc, (size_t)toc_len - 32, 0);
   memcpy(v->head, a->magic, 4);
   put32(v->head + 4, 0x10004);
   memcpy(v->head + 8, "zlib", 4);
@@ -545,7 +574,7 @@ sb_virt *sb_virt_build(const sb_arc *a, int fd, int to) {
   put32(v->head + 16, ENTRY);
   put32(v->head + 20, n);
   put32(v->head + 24, BLOCK);
-  put32(v->head + 28, a->flags | 4);
+  put32(v->head + 28, flags);
   free(kind), free(names), free(graph), free(bn.d), free(bn.zl), free(bg.d), free(bg.zl), free(ba.d), free(ba.zl);
   return v;
 fail:

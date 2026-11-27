@@ -5,9 +5,11 @@ A mod for RS Re-ARMed: each edition reads the other platform's song archives in 
 both forms is shown once, from the edition's own archive.
 
 An [RS Extended Range](https://github.com/SomeeName/rs-extended-range) native package (`x_rsxr_p.psarc`, or a Mac
-form `x_rsxr_m.psarc`: charts for seven or eight strings or an extended bass) is served the same way and keeps its
-`PSXR` magic, so an edition reads it only with the native format's support (rearmed-mods' Seven-String Guitar, with
-Plain Packages on), as it would its own. Its charts and manifests reach the game as the package has them.
+form `x_rsxr_m.psarc` as rocksmithconvert makes one: charts for seven or eight strings or a five- or six-string bass)
+is served the same way, as it is but for its platform's parts (the names and the aggregate graph): it keeps its
+`PSXR` magic, its plain table of contents and its plain charts, byte for byte. An edition reads it only with the
+native format's support (rearmed-mods' Seven-String Guitar, with Plain Packages on), as it would its own. Any other
+plain archive is served encrypted, so that it needs nothing of the game.
 
 A custom song (an archive with a `toolkit.version`) is served with the AppID custom songs are made with, 248750, so
 the game lists it whatever AppID it carries. Other archives keep theirs.
@@ -69,8 +71,11 @@ Needs an RS Re-ARMed with the file provider interface (`rc_file.h`).
 `RS_REARMED` names the rs-rearmed checkout to build against (default `~/src/rs-rearmed`). The tests compare with the
 offline converter (`--converter FILE`) and with sample archives: `--samples DIR`, a folder with songs as both
 `x_p.psarc` and `x_m.psarc` (default `/Volumes/Storage/Rocksmith/songs/backup-dlc`; without such a folder the parts
-that need samples are skipped, and the test says so), `--all` for every sample. `--native FILE`: an RS Extended Range
-native package, as DotCharter exports one or its `tools/native_chart.py to-native` makes.
+that need samples are skipped, and the test says so), `--all` for every sample. RS Extended Range native packages are
+tried in both editions, each with its Mac form made by the test: each `--native FILE` (by default two DotCharter
+exports in `~/Downloads`, a 7-string lead with a 5-string bass and a stock rhythm, and an 8-string lead, when they are
+there), and packages made from a sample: a 7- and an 8-string lead, a 5- and a 6-string bass, and an encrypted
+7-string one, with the sample itself as the stock control.
 The parts a feedpak's archive is made of have tests of their own: `--test-pak`, `--test-varc`, `--test-wem`,
 `--test-cache`, `--test-feed` (`--pak FILE` for each package to try), and `tests/build_*_test.sh` for the song file
 writer, the manifests, the sound banks and the album art. Some need the game's codebook library, which the game

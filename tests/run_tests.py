@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks the mod on real archives, without a game.
 
-usage: build.sh --test [--all] [--samples DIR] [--converter psarc_to_mac.py] [--plain X_p.psarc] [--native X_rsxr_p.psarc]
+usage: build.sh --test [--all] [--samples DIR] [--converter psarc_to_mac.py] [--plain X_p.psarc] [--native X_rsxr_p.psarc]...
 
 SBTEST (tests/sbtest.c) starts the mod for one edition and reads through rc_file.c, as the game does. For each
 sample this compares the archive the mod serves with what the offline converter makes of the same file (every
@@ -9,9 +9,13 @@ entry's content; a song file's after decrypting it with the edition's key), and,
 song for both platforms, with the other platform's real archive. Then the listing rules: one archive a song, and
 files that are not whole archives left alone.
 
-A native package of RS Extended Range (--native: an x_rsxr_p.psarc, a plain archive with the magic PSXR, N-string
-charts whose inflated body starts SNXR and manifests with ExtendedRange) is served in both directions with its magic
-kept and its charts' bodies as they are; its Mac form is made here from it.
+A native package of RS Extended Range (an x_rsxr_p.psarc, a plain archive with the magic PSXR, N-string charts whose
+inflated body starts SNXR and manifests with ExtendedRange) is served in both directions as it is but for its
+platform's parts: its magic, its plain table of contents and its plain song files kept; its Mac form is made here from
+it. The packages tried: each --native that is there (by default two DotCharter exports: a 7-string lead, a 5-string
+bass and a stock rhythm; an 8-string lead), and ones made here from the smallest sample with a bass: a 7- and an
+8-string lead, a 5- and a 6-string bass, and a 7-string one encrypted (table of contents and song files), with the
+sample itself as the stock control.
 
 Without samples (--samples names no folder with pairs) the parts that need them are skipped, and said so.
 
@@ -21,6 +25,7 @@ import argparse
 import collections
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -82,15 +87,26 @@ def read(path):
         os.unlink(tmp)
 
 
-def strict(path, want_magic=b"PSAR"):
+def toc_flags(path):
+    with open(path, "rb") as f:
+        return struct.unpack(">I", f.read(32)[28:32])[0]
+
+
+def strict(path, want_magic=b"PSAR", want_flags=None):
     """The archive read as a strict reader does: every entry inside the file, a block compressed exactly when it is
-    shorter than 64 KiB and starts with a zlib header. names -> content, in the table's order."""
+    shorter than 64 KiB and starts with a zlib header. names -> content, in the table's order. want_flags: the
+    header's flags (None: any with 4, an encrypted table of contents)."""
     d = open(path, "rb").read()
     magic, ver, comp, toc_len, esize, n, bsize, flags = struct.unpack(">4sI4sIIIII", d[:32])
     ok(magic == want_magic, "magic %s, as the source's" % want_magic.decode())
     ok(ver == 0x10004 and comp == b"zlib" and esize == 30 and bsize == BLOCK, "header")
-    ok(flags & 4, "table of contents encrypted")
-    toc = conv.aes("cfb", conv.TOC_KEY, conv.TOC_IV, d[32:toc_len], True)
+    if want_flags is None:
+        ok(flags & 4, "table of contents encrypted")
+    else:
+        ok(flags == want_flags, "flags %d, as the source's (table of contents %s)" % (want_flags, "encrypted" if want_flags & 4 else "plain"))
+    toc = d[32:toc_len]
+    if flags & 4:
+        toc = conv.aes("cfb", conv.TOC_KEY, conv.TOC_IV, toc, True)
     ok((len(toc) - 30 * n) % 2 == 0, "table of contents length")
     zl = struct.unpack(">%dH" % ((len(toc) - 30 * n) // 2), toc[30 * n:])
     files, md5s, used = [], [], 0
@@ -156,12 +172,17 @@ def served(target, src, tmp):
     ok(listing(target, dlc) == [vname], "%s listed as %s alone" % (base, vname))
     out = os.path.join(d, "out.psarc")
     sb(target, "dump", os.path.join(dlc, vname), out)
-    content = strict(out, magic_of(src))
+    native = magic_of(src) == b"PSXR"
+    content = strict(out, magic_of(src), toc_flags(src) if native else None)
     lenient = read(out)
     ok(list(lenient.items()) == list(content.items()), "the converter's reader reads the same")
     size = os.path.getsize(out)
     shutil.rmtree(d)
     return content, size
+
+
+def sng_flags(data):
+    return struct.unpack("<I", data[4:8])[0]
 
 
 def check_sng(name, data, want_payload):
@@ -179,42 +200,111 @@ def body(name, sng):
     return raw
 
 
+def check_song_file(name, served_name, data, v, native):
+    """A song file as served: a native package's plain one as it is, any other encrypted with the edition's key"""
+    if native and sng_flags(data) == 1:
+        ok(v == data, name + ": a native package's plain song file, as it is")
+    else:
+        check_sng(served_name, v, sng_plain(name, data))
+        ok(len(v) == len(data), name + ": length kept")
+
+
+INSTRUMENT = {0: "guitar", 1: "bass"}
+
+
 def native_checks(src, got, name_to):
-    """For a native package (any SNXR chart): what the native format's reader needs is there as the source has it"""
-    if not any(is_sng(k) and body(k, v).startswith(b"SNXR") for k, v in src.items()):
-        return
+    """For a native package (PSXR): what the native format's reader needs is there as the source has it. Its charts,
+    for the log: arrangement and what it is (guitar 7, bass 5, stock)"""
+    charts = []
     for name, data in src.items():
         v = got[name_to(name)]
         if is_sng(name):
             want = body(name, data)
             ok(body(name_to(name), v) == want, name + ": the inflated body as the source's" + (" (SNXR)" if want[:4] == b"SNXR" else ""))
+            arr = name.rsplit("_", 1)[-1][:-4]
+            if want[:4] == b"SNXR":
+                ok(want[4] == 1 and want[5] in INSTRUMENT, name + ": an SNXR header (version 1, guitar or bass)")
+                charts.append("%s %s %d" % (arr, INSTRUMENT[want[5]], want[6]))
+            elif arr != "vocals":
+                charts.append(arr + " stock")
         elif name.startswith("manifests/") and b'"ExtendedRange"' in data:
             ok(v == data and b'"Tuning"' in v, name + ": ExtendedRange and Tuning as the source has them")
+    ok(any(c.split()[1] != "stock" for c in charts), "a native package with a native chart")
+    return ", ".join(sorted(charts))
 
 
 def mac_form(p, out):
-    """The Mac form of the native package p, as DotCharter's Windows one would be converted and kept plain: names and
-    aggregate graph the Mac's, song files plain as they are, the magic PSXR"""
+    """The Mac form of the native package p, as rocksmithconvert makes it: names and aggregate graph the Mac's, the
+    magic PSXR, the table of contents and plain song files as they are (an encrypted song file: the Mac's key)"""
     mac = {}
     for name, data in read(p).items():
         if name.endswith("aggregategraph.nt"):
             data = conv.to_mac(data.decode()).replace("dx9", "macos").encode()
+        elif is_sng(name) and sng_flags(data) == 3:
+            data = conv.sng_file(sng_plain(name, data), False)
         mac[conv.to_mac(name)] = data
-    conv.write_psarc(out, mac, False)
+    write_package(out, mac, b"PSXR", toc_flags(p) & 4)
+
+
+def write_package(out, content, magic, encrypt):
+    conv.write_psarc(out, content, bool(encrypt))
     with open(out, "r+b") as f:
-        f.write(b"PSXR")
+        f.write(magic)
+
+
+def sng_file_pc(payload, plain):
+    """A Windows song file of payload (u32 size + zlib stream): plain, or encrypted with the PC key"""
+    if plain:
+        return conv.sng_file(payload, True)
+    iv = bytes(16)
+    return struct.pack("<II", conv.SNG_MAGIC, 3) + iv + conv.aes("ctr", conv.SNG_KEY["pc"], iv.hex(), payload, False) + bytes(conv.SIG_LEN)
+
+
+def native_body(raw, instrument, strings):
+    """An SNXR body for the log and for Song Bridge: the native header and a stock body after it (its records are
+    not N wide: what the mod serves is the package's bytes, whatever they say), and the padding the format has"""
+    return struct.pack("<4sBBBB", b"SNXR", 1, instrument, strings, 0) + raw + bytes(256)
+
+
+def synth_native(base, out, arrangement, instrument, strings, encrypted=False):
+    """A native package made of the stock Windows archive base: the chart of `arrangement` an SNXR one for
+    instrument/strings, its manifests with ExtendedRange and an N-string Tuning; the other charts stock. Plain (the
+    table of contents, flags 1 song files) unless encrypted."""
+    src, content, ids = read(base), {}, set()
+    for name, data in src.items():
+        if is_sng(name):
+            payload = sng_plain(name, data)
+            if name.endswith("_%s.sng" % arrangement):
+                raw = zlib.decompress(payload[4:])
+                b = native_body(raw, instrument, strings)
+                payload = struct.pack("<I", len(b)) + zlib.compress(b, 9)
+            data = sng_file_pc(payload, not encrypted)
+        content[name] = data
+    ok(any(is_sng(k) and k.endswith("_%s.sng" % arrangement) for k in content), "%s: a %s chart" % (base, arrangement))
+    tuning = {"string%d" % i: 0 for i in range(strings)}
+    for name in [k for k in content if k.startswith("manifests/") and k.endswith("_%s.json" % arrangement)]:
+        j = json.loads(content[name])
+        for key, e in j["Entries"].items():
+            e["Attributes"].update(ExtendedRange={"Version": 1}, Tuning=tuning)
+            ids.add(key)
+        content[name] = json.dumps(j, indent=2).encode()
+    for name in [k for k in content if k.startswith("manifests/") and k.endswith(".hsan")]:
+        j = json.loads(content[name])
+        for key in ids & set(j["Entries"]):
+            j["Entries"][key]["Attributes"].update(ExtendedRange={"Version": 1}, Tuning=tuning)
+        content[name] = json.dumps(j, indent=2).encode()
+    write_package(out, content, b"PSXR", encrypted)
 
 
 def win_to_mac(p, twin, tmp):
     got, size = served("mac-x64", p, tmp)
-    src = read(p)
+    src, native = read(p), magic_of(p) == b"PSXR"
     ok(list(got) == [conv.to_mac(k) for k in src], "names")
     nsng = 0
     for name, data in src.items():
         v = got[conv.to_mac(name)]
         if is_sng(name):
-            check_sng(conv.to_mac(name), v, sng_plain(name, data))
-            ok(len(v) == len(data), name + ": length kept")
+            check_song_file(name, conv.to_mac(name), data, v, native)
             nsng += 1
         elif name.endswith("aggregategraph.nt"):
             ok(v == conv.to_mac(data.decode()).replace("dx9", "macos").encode(), "aggregate graph as the converter's")
@@ -238,13 +328,14 @@ def win_to_mac(p, twin, tmp):
                 ok(not name.startswith(("manifests/", "gamexblocks/", "songs/")), name + ": the real Mac archive's")
                 differ.append(name)
         note = ", matches " + os.path.basename(twin) + (" but its own " + ", ".join(differ) if differ else "")
-    native_checks(src, got, conv.to_mac)
+    if native:
+        note += " (%s)" % native_checks(src, got, conv.to_mac)
     print("  mac-x64  %-34s %9d bytes, %2d entries, %d song files%s" % (os.path.basename(p), size, len(got), nsng, note))
 
 
 def mac_to_win(m, twin, tmp):
     got, size = served("win-x86", m, tmp)
-    src = read(m)
+    src, native = read(m), magic_of(m) == b"PSXR"
     ok(list(got) == [to_win(k) for k in src], "names")
     nsng = 0
     for name, data in src.items():
@@ -252,8 +343,7 @@ def mac_to_win(m, twin, tmp):
         v = got[w]
         ok("macos" not in w and "audio/mac" not in w, w + ": a Windows name")
         if is_sng(name):
-            check_sng(w, v, sng_plain(name, data))
-            ok(len(v) == len(data), name + ": length kept")
+            check_song_file(name, w, data, v, native)
             nsng += 1
         elif name.endswith("aggregategraph.nt"):
             ok(b"macos" not in v and b"audio/mac" not in v, "aggregate graph: nothing of the Mac's")
@@ -273,6 +363,8 @@ def mac_to_win(m, twin, tmp):
         for name, data in real.items():
             if is_sng(name):
                 ok(sng_plain(name, data) == sng_plain(name, got[name]), name + ": the real Windows archive's song")
+                if native and sng_flags(data) == 1:
+                    ok(data == got[name], name + ": the Windows package's own bytes")
             elif name.endswith("aggregategraph.nt"):
                 ok(lines(data) == lines(got[name]), "aggregate graph: the real Windows archive's lines")
             elif data != got[name]:
@@ -281,7 +373,8 @@ def mac_to_win(m, twin, tmp):
                 ok(not name.startswith(("manifests/", "gamexblocks/", "songs/")), name + ": the real Windows archive's")
                 differ.append(name)
         note = ", matches " + os.path.basename(twin) + (" but its own " + ", ".join(differ) if differ else "")
-    native_checks(src, got, to_win)
+    if native:
+        note += " (%s)" % native_checks(src, got, to_win)
     print("  win-x86  %-34s %9d bytes, %2d entries, %d song files%s" % (os.path.basename(m), size, len(got), nsng, note))
 
 
@@ -351,17 +444,45 @@ def rules(target, foreign, native, tmp, tag=""):
     print("  %s  listing rules, files that are not archives%s" % (target, tag and " (%s)" % tag))
 
 
+SAMPLES = "/Volumes/Storage/Rocksmith/songs/backup-dlc"
+# DotCharter exports: a 7-string lead, a 5-string bass, a stock 6-string rhythm and vocals; an 8-string lead. The
+# first of each group that is there is tried.
+NATIVE = [[os.path.expanduser("~/Downloads/Nickelback_Burn-It-To-The-Ground_Dell_v2_3_rsxr_p.psarc"),
+           "/Volumes/Storage/Rocksmith/build/seven-native/Nickelback_Burn-It-To-The-Ground_Dell_v2_3_rsxr_p.psarc"],
+          [os.path.expanduser("~/Downloads/Fear-Factory_Soul-Hacker_Dell_v0_2_rsxr_p.psarc")]]
+# made of a sample: name, the arrangement made native, instrument, strings, encrypted
+SYNTH = [("guitar7", "lead", 0, 7, False), ("guitar8", "lead", 0, 8, False), ("bass5", "bass", 1, 5, False),
+         ("bass6", "bass", 1, 6, False), ("guitar7-encrypted", "lead", 0, 7, True)]
+
+
+def synth_base(pairs):
+    """The smallest pair whose Windows archive has a lead and a bass chart, or None"""
+    for p, m in sorted(pairs, key=lambda pm: os.path.getsize(pm[0]))[:20]:
+        names = list(read(p))
+        if any(is_sng(k) and k.endswith("_lead.sng") for k in names) and any(is_sng(k) and k.endswith("_bass.sng") for k in names):
+            return p, m
+    return None
+
+
+def native_both_ways(p, tmp):
+    """The native package p in the Mac edition, and its Mac form in Learn & Play; the Mac form's path"""
+    ok(magic_of(p) == b"PSXR" and p.endswith("_rsxr_p.psarc"), "%s: an x_rsxr_p.psarc with the magic PSXR" % p)
+    nm = os.path.join(tmp, os.path.basename(p)[:-len("_p.psarc")] + "_m.psarc")
+    mac_form(p, nm)
+    win_to_mac(p, None, tmp)
+    mac_to_win(nm, p, tmp)
+    return nm
+
+
 def main():
     global conv, sbtest
     ap = argparse.ArgumentParser()
     ap.add_argument("sbtest")
     ap.add_argument("--all", action="store_true", help="every pair of the samples, not a selection")
-    ap.add_argument("--samples", default="/Volumes/Storage/Rocksmith/songs/backup-dlc",
-                    help="a folder with x_p.psarc and x_m.psarc of the same songs")
+    ap.add_argument("--samples", default=SAMPLES, help="a folder with x_p.psarc and x_m.psarc of the same songs")
     ap.add_argument("--converter", default="/Volumes/Storage/Rocksmith/tools/psarc-to-mac/psarc_to_mac.py")
     ap.add_argument("--plain", default="/Volumes/Storage/Rocksmith/build/seven-mac-work/seven/plain/Ave-Mujica_A-Song-Of-Romance-plain_p.psarc")
-    ap.add_argument("--native", help="an RS Extended Range native package (PSXR)",
-                    default="/Volumes/Storage/Rocksmith/build/seven-native/Nickelback_Burn-It-To-The-Ground_Dell_v2_3_rsxr_p.psarc")
+    ap.add_argument("--native", action="append", help="an RS Extended Range native package (PSXR); again for more")
     a = ap.parse_args()
     sbtest = os.path.abspath(a.sbtest)
     if not os.path.exists(a.converter):
@@ -376,6 +497,7 @@ def main():
             if f.endswith("_p.psarc") and os.path.exists(os.path.join(root, f[:-8] + "_m.psarc")):
                 pairs.append((os.path.join(root, f), os.path.join(root, f[:-8] + "_m.psarc")))
     pairs.sort()
+    every = pairs
     if pairs:
         small = min(pairs, key=lambda pm: os.path.getsize(pm[0]))
         if not a.all:
@@ -383,14 +505,24 @@ def main():
             step = max(1, len(pairs) // 6)
             pairs = sorted(set(pairs[::step][:6] + big + [small]))
     else:
-        print("(no pairs of x_p.psarc and x_m.psarc under %s (--samples DIR): the samples and the listing rules on them\n"
-              " are skipped)" % a.samples)
+        print("(no pairs of x_p.psarc and x_m.psarc under %s (--samples DIR): the samples, the listing rules and the\n"
+              " native packages made of a sample are skipped)" % a.samples)
     mac_only = []
     for root, _, files in os.walk(a.samples):
         for f in sorted(files):
             if f.endswith("_m.psarc") and not os.path.exists(os.path.join(root, f[:-8] + "_p.psarc")):
                 mac_only.append(os.path.join(root, f))
     mac_only = mac_only if a.all else mac_only[::max(1, len(mac_only) // 6)][:6]
+    if a.native:
+        natives = a.native
+        for p in natives:
+            ok(os.path.exists(p), "--native %s: there" % p)
+    else:
+        natives = [next((p for p in group if os.path.exists(p)), None) for group in NATIVE]
+        for group, p in zip(NATIVE, natives):
+            if not p:
+                print("(no native package to try: %s)" % " or ".join(group))
+        natives = [p for p in natives if p]
 
     tmp = tempfile.mkdtemp(prefix="songbridge-test-")
     try:
@@ -410,17 +542,28 @@ def main():
             print("Rules:")
             rules("mac-x64", small[0], small[1], tmp)
             rules("win-x86", small[1], small[0], tmp)
-        if a.native and os.path.exists(a.native):
-            ok(magic_of(a.native) == b"PSXR" and a.native.endswith("_rsxr_p.psarc"), "--native: an x_rsxr_p.psarc with the magic PSXR")
-            print("RS Extended Range native package, both forms:")
-            nm = os.path.join(tmp, os.path.basename(a.native)[:-len("_p.psarc")] + "_m.psarc")
-            mac_form(a.native, nm)
-            win_to_mac(a.native, None, tmp)
-            mac_to_win(nm, a.native, tmp)
-            rules("mac-x64", a.native, nm, tmp, "native")
-            rules("win-x86", nm, a.native, tmp, "native")
-        else:
-            print("(no native package to try: %s)" % a.native)
+        print("RS Extended Range native packages, both forms:")
+        for p in natives:
+            nm = native_both_ways(p, tmp)
+            if p == natives[0]:
+                rules("mac-x64", p, nm, tmp, "native")
+                rules("win-x86", nm, p, tmp, "native")
+        base = synth_base(every) if every else None
+        if base:
+            print("  made of %s, and it as the stock control:" % os.path.basename(base[0]))
+            win_to_mac(base[0], base[1], tmp)
+            mac_to_win(base[1], base[0], tmp)
+            d = os.path.join(tmp, "synth")
+            os.mkdir(d)
+            for name, arrangement, instrument, strings, encrypted in SYNTH:
+                p = os.path.join(d, "synth-%s_rsxr_p.psarc" % name)
+                synth_native(base[0], p, arrangement, instrument, strings, encrypted)
+                nm = native_both_ways(p, tmp)
+                if name == "guitar7":
+                    rules("mac-x64", p, nm, tmp, "native, made")
+                    rules("win-x86", nm, p, tmp, "native, made")
+        elif every:
+            print("  (no sample with a lead and a bass chart to make native packages of)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("passed: %d checks" % checks)
